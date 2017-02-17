@@ -16,11 +16,10 @@ Options:
     --encoding=<enc>   Encoding the lexicon uses [default: latin-1].
 
 """
-from __future__ import print_function, division, unicode_literals
 import os.path
 import docopt
 import pickle
-from sys import stderr
+from sys import stderr, version_info, exit
 from math import sqrt, log2 as lg
 from operator import itemgetter, mul
 from collections import Counter
@@ -29,6 +28,7 @@ from fileinput import input as fileinput
 from functools import reduce
 __loc__ = os.path.realpath(os.path.join(os.getcwd(),
     os.path.dirname(__file__)))
+
 
 def log(*args, **kwargs):
     """Print to stderr."""
@@ -313,6 +313,9 @@ class Splitter(object):
         return result[1:]
 
 if __name__ == '__main__':
+    if version_info < (3, 5):
+        log("Error: Python >=3.5 required.")
+        exit(1)
     args = docopt.docopt(__doc__)
     if args['-v']:
         verbose = True
