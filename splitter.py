@@ -93,7 +93,7 @@ class Splitter(object):
 
     def read_lexicon(self):
         """Read the language-specific lexicon."""
-        with open(os.path.join(__loc__, "lex", "words-with-counts-medical." + self.lang), encoding=self.encoding) as f:
+        with open(os.path.join(__loc__, "lex", self.lang + ".lexicon.tsv"), encoding=self.encoding) as f:
             for line in f:
                 try:
                     count, word = fix_text(line).split()
@@ -106,7 +106,7 @@ class Splitter(object):
                 self.words[word.lower()] += count
         try:
             if self.use_stopwords:
-                with open(os.path.join(__loc__, "lex", "stop." + self.lang)) as f:
+                with open(os.path.join(__loc__, "lex", self.lang + ".stopwords.txt")) as f:
                     for line in f:
                         word = fix_text(line.strip())
                         if word in self.words:
@@ -114,9 +114,9 @@ class Splitter(object):
         except:
             pass
         if self.use_stopwords:
-            with open(os.path.join(__loc__, "lex", "suffixes." + self.lang)) as f:
+            with open(os.path.join(__loc__, "lex", self.lang + ".suffixes.txt")) as f:
                 self.suffixes = set(map(str.strip, f))
-            with open(os.path.join(__loc__, "lex", "prefixes." + self.lang)) as f:
+            with open(os.path.join(__loc__, "lex", self.lang + ".prefixes.txt")) as f:
                 self.prefixes = set(map(str.strip, f))
         else:
             self.suffixes = set()
@@ -124,7 +124,7 @@ class Splitter(object):
 
     def read_vectors(self):
         """Read the vector space into self.vec."""
-        with open(os.path.join(__loc__, "vec", "emea.{lang}.pkl".format(lang=self.lang)), "rb") as f:
+        with open(os.path.join(__loc__, "lex", "{lang}.vectors.pkl".format(lang=self.lang)), "rb") as f:
             self.vec = pickle.load(f)
 
     @staticmethod
