@@ -3,7 +3,7 @@
 Compound Splitter
 
 Usage:
-    splitter.py [options] <file>
+    splitter.py [options] <file>...
 
 Options:
     --lang=<lang>      Specify the language [default: de].
@@ -316,8 +316,10 @@ if __name__ == '__main__':
     args = docopt.docopt(__doc__)
     if args['-v']:
         verbose = True
+    log("Initializing...", end="", flush=True)
     spl = Splitter(language=args['--lang'], verbose=args['-v'], args=args)
-    with open(args['<file>']) as f:
-        for line in f:
-            line = fix_text(line)
-            print(line.strip(), spl.split(line.strip(), output="eval"), sep="\t")
+    log("done")
+    for line in fileinput(args['<file>']):
+        if not line.strip(): break
+        line = fix_text(line)
+        print(line.strip(), spl.split(line.strip(), output="eval"), sep="\t")
