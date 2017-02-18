@@ -13,7 +13,6 @@ Options:
     --use-counts=<uc>  Use frequencies to rank splitting [default: yes].
     --use-vectors=<uv> Use vectors to rank splitting [default: yes].
     --min-freq=<mf>    Minimum frequency to consider word [default: 2].
-    --encoding=<enc>   Encoding the lexicon uses [default: latin-1].
 
 """
 import os.path
@@ -61,10 +60,6 @@ class Splitter(object):
             self.use_stopwords = self.args['--stopwords'] == 'yes'
         else:
             self.use_stopwords = True
-        if '--encoding' in self.args:
-            self.encoding = self.args['--encoding']
-        else:
-            self.encoding = 'latin-1'
         if '--use-vectors' in self.args:
             self.use_vectors = self.args['--use-vectors'] == 'yes'
         else:
@@ -93,28 +88,23 @@ class Splitter(object):
 
     def read_lexicon(self, limit=None):
         """Read the language-specific lexicon."""
-        with open(os.path.join(__loc__, "lex", self.lang + ".lexicon.tsv"), encoding=self.encoding) as f:
+        log("Reading " + os.path.join(__loc__, "lex", self.lang + ".lexicon.tsv"))
+        with open(os.path.join(__loc__, "lex", self.lang + ".lexicon.tsv")) as f:
             for index, line in enumerate(f):
                 if limit is not None and index >= limit:
                     break
-                try:
-                    word, count = line.split()  # fix_text() removed
-                except ValueError:
-                    continue  # filter noise
+                word, count = line.split()  # fix_text() removed
                 if len(word) < 4: continue  # filter out noise
                 # if not word.isalpha(): continue
                 count = int(count)
                 if count < self.min_freq: continue
                 self.words[word.lower()] += count
-        try:
-            if self.use_stopwords:
-                with open(os.path.join(__loc__, "lex", self.lang + ".stopwords.txt")) as f:
-                    for line in f:
-                        word = fix_text(line.strip())
-                        if word in self.words:
-                            del self.words[word]
-        except:
-            pass
+        if self.use_stopwords:
+            with open(os.path.join(__loc__, "lex", self.lang + ".stopwords.txt")) as f:
+                for line in f:
+                    word = fix_text(line.strip())
+                    if word in self.words:
+                        del self.words[word]
         if self.use_stopwords:
             with open(os.path.join(__loc__, "lex", self.lang + ".suffixes.txt")) as f:
                 self.suffixes = set(map(str.strip, f))
