@@ -1,1 +1,3 @@
 __pycache__
+lex/*.lexicon.tsv
+lex/old*

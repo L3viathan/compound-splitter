@@ -91,16 +91,18 @@ class Splitter(object):
         else:
             raise NotImplementedError()
 
-    def read_lexicon(self):
+    def read_lexicon(self, limit=None):
         """Read the language-specific lexicon."""
         with open(os.path.join(__loc__, "lex", self.lang + ".lexicon.tsv"), encoding=self.encoding) as f:
-            for line in f:
+            for index, line in enumerate(f):
+                if limit is not None and index >= limit:
+                    break
                 try:
-                    count, word = fix_text(line).split()
+                    word, count = line.split()  # fix_text() removed
                 except ValueError:
                     continue  # filter noise
                 if len(word) < 4: continue  # filter out noise
-                if not word.isalpha(): continue
+                # if not word.isalpha(): continue
                 count = int(count)
                 if count < self.min_freq: continue
                 self.words[word.lower()] += count
