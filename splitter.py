@@ -6,13 +6,14 @@ Usage:
     splitter.py [options] <file>...
 
 Options:
-    --lang=<lang>      Specify the language [default: de].
-    -v                 Be verbose
-    --stopwords=<sw>   Use stopword list [default: yes].
-    --force-split=<fs> Try always splitting [default: no].
-    --use-counts=<uc>  Use frequencies to rank splitting [default: yes].
-    --use-vectors=<uv> Use vectors to rank splitting [default: yes].
-    --min-freq=<mf>    Minimum frequency to consider word [default: 2].
+    --help                   Display this help and exit.
+    -L --lang=<...>          Specify the language [default: de].
+    -v --verbose             Be verbose.
+    -S --stopwords=<yes|no>  Use stopword list [default: yes].
+    --force-split=<yes|no>   Try always splitting [default: no].
+    --use-counts=<yes|no>    Use frequencies to rank splitting [default: yes].
+    --use-vectors=<yes|no>   Use vectors to rank splitting [default: yes].
+    --min-freq=<yes|no>      Minimum frequency to consider word [default: 2].
 
 """
 import os.path
