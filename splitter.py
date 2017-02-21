@@ -3,12 +3,12 @@
 Compound Splitter
 
 Usage:
-    splitter.py [options] <file>...
+    splitter.py [-v ...] [options] <file>...
 
 Options:
     --help                   Display this help and exit.
     -L --lang=<...>          Specify the language [default: de].
-    -v --verbose             Be verbose.
+    -v --verbose             Be verbose. Repeatable for more verbosity.
     -S --stopwords=<yes|no>  Use stopword list [default: yes].
     --force-split=<yes|no>   Try always splitting [default: no].
     --use-counts=<yes|no>    Use frequencies to rank splitting [default: yes].
@@ -30,10 +30,6 @@ __loc__ = os.path.realpath(os.path.join(os.getcwd(),
     os.path.dirname(__file__)))
 
 
-def log(*args, **kwargs):
-    """Print to stderr."""
-    print(*args, file=stderr, **kwargs)
-
 def log0(x):
     return 0 if x == 0 else lg(x)
 
@@ -45,6 +41,11 @@ def pairwise(iterable):
     yield from zip(i, j)
 
 class Splitter(object):
+    def log(self, level, *args, **kwargs):
+        """Print to stderr if verbose mode is set"""
+        if self.verbose >= level:
+            print(*args, file=stderr, **kwargs)
+
     def __init__(self, *, language="de", verbose=False, args):
         """Initialize the Splitter."""
         self.verbose = verbose
@@ -89,7 +90,12 @@ class Splitter(object):
 
     def read_lexicon(self, limit=None):
         """Read the language-specific lexicon."""
-        log("Reading " + os.path.join(__loc__, "lex", self.lang + ".lexicon.tsv"))
+        self.log(
+                1,
+                "Loading " + os.path.join(__loc__, "lex", self.lang + ".lexicon.tsv"),
+                end='',
+                flush=True,
+                )
         with open(os.path.join(__loc__, "lex", self.lang + ".lexicon.tsv")) as f:
             for index, line in enumerate(f):
                 if limit is not None and index >= limit:
@@ -114,6 +120,7 @@ class Splitter(object):
         else:
             self.suffixes = set()
             self.prefixes = set()
+        self.log(1, "...done")
 
     def read_vectors(self):
         """Read the vector space into self.vec."""
@@ -151,17 +158,37 @@ class Splitter(object):
     def split(self, word, *, output="tuple"):
         """Split a given word in its parts."""
         # high-level method. This basically filters the output from splits
-        if self.verbose:
-            log("Splitting", word)
         word = word.lower()
+        self.log(2, "Splitting", word)
         splits = self.splits(word)
-        if not splits:  # in case we change the returning of unknown things
-            return (word,) if output == "tuple" else word
+        # if not splits:  # in case we change the returning of unknown things
+        #     return (word,) if output == "tuple" else word
+
+        clean = self.clean(splits)
+        best = self.rank(clean, word)
+
+        self.log(2, "Best:", best)
+
+        # if self.use_stopwords and len(best) > 1 and best[-1] in self.suffixes:
+        #     best = best[:-2] + (best[-2]+best[-1],)
+
+        return best if output == "tuple" else self.evalify(best)
+
+    def rank(self, clean, word):
+        # Ranking:
+        self.log(2, "Ranking list:", clean)
+        if hasattr(self, 'custom_ranking'):
+            return self.custom_ranking(clean, word)
+        if not self.use_counts:
+            return self.most_known(clean, word)
+        else:
+            return self.best_avg_frequency(clean, word)
+
+    def clean(self, splits):
         clean = set()
         # Cleaning:
         for split in splits:
-            if self.verbose:
-                log("Possible split:", split)
+            self.log(3, "Possible split:", split)
             cleaned = []
             i = 0
             last = len(split)-1
@@ -192,28 +219,13 @@ class Splitter(object):
             if len(split) > 1 and any(part in self.prefixes for part in split):
                 continue
 
-            if self.verbose:
-                log("Cleaned:", cleaned)
+            self.log(3, "Cleaned:", cleaned)
             clean.add(tuple(cleaned))
 
         if hasattr(self, 'custom_cleaning'):
             clean = self.custom_cleaning(clean, word)
 
-        # Ranking:
-        if hasattr(self, 'custom_ranking'):
-            best = self.custom_ranking(clean, word)
-        if not self.use_counts:
-            best = self.most_known(clean, word)
-        else:
-            best = self.best_avg_frequency(clean, word)
-
-        if self.verbose:
-            log("Best:", best)
-
-        # if self.use_stopwords and len(best) > 1 and best[-1] in self.suffixes:
-        #     best = best[:-2] + (best[-2]+best[-1],)
-
-        return best if output == "tuple" else self.evalify(best)
+        return clean
 
     @staticmethod
     def nth_root(x, n):
@@ -307,14 +319,12 @@ class Splitter(object):
 
 if __name__ == '__main__':
     if version_info < (3, 5):
-        log("Error: Python >=3.5 required.")
+        print("Error: Python >=3.5 required.", file=sys.stderr)
         exit(1)
     args = docopt.docopt(__doc__)
-    if args['-v']:
+    if args['--verbose']:
         verbose = True
-    log("Initializing...", end="", flush=True)
-    spl = Splitter(language=args['--lang'], verbose=args['-v'], args=args)
-    log("done")
+    spl = Splitter(language=args['--lang'], verbose=args['--verbose'], args=args)
     for line in fileinput(args['<file>']):
         if not line.strip(): break
         line = fix_text(line)
