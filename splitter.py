@@ -11,9 +11,19 @@ Options:
     -v --verbose             Be verbose. Repeatable for more verbosity.
     -S --stopwords=<yes|no>  Use stopword list [default: yes].
     --force-split=<yes|no>   Try always splitting [default: no].
-    --use-counts=<yes|no>    Use frequencies to rank splitting [default: yes].
-    --use-vectors=<yes|no>   Use vectors to rank splitting [default: yes].
     --min-freq=<yes|no>      Minimum frequency to consider word [default: 2].
+    --ranking=<...>          Comma-seperated list of methods to use.
+
+Possible values for the --ranking switch are methods of the Splitter class that
+start with "rank_":
+
+- semantic_similarity
+- avg_frequency
+- most_known
+- longest
+- shortest
+
+The default is: --ranking=avg_frequency,semantic_similarity,shortest
 
 """
 import os.path
@@ -23,7 +33,6 @@ from sys import stderr, version_info, exit
 from math import sqrt, log2 as lg
 from operator import itemgetter, mul
 from collections import Counter
-from ftfy import fix_text
 from fileinput import input as fileinput
 from functools import reduce
 __loc__ = os.path.realpath(os.path.join(os.getcwd(),
@@ -49,29 +58,26 @@ class Splitter(object):
     def __init__(self, *, language="de", verbose=False, args):
         """Initialize the Splitter."""
         self.verbose = verbose
-        self.args = args
-        if '--force-split' in self.args:
-            self.force_split = self.args['--force-split'] == 'yes'
+        if '--force-split' in args:
+            self.force_split = args['--force-split'] == 'yes'
         else:
             self.force_split = False
-        if '--use-counts' in self.args:
-            self.use_counts = self.args['--use-counts'] == 'yes'
-        else:
-            self.use_counts = True
-        if '--stopwords' in self.args:
-            self.use_stopwords = self.args['--stopwords'] == 'yes'
+        if '--stopwords' in args:
+            self.use_stopwords = args['--stopwords'] == 'yes'
         else:
             self.use_stopwords = True
-        if '--use-vectors' in self.args:
-            self.use_vectors = self.args['--use-vectors'] == 'yes'
-        else:
-            self.use_vectors = True
-        self.min_freq = int(self.args.get('--min-freq', '2'))
+        self.min_freq = int(args.get('--min-freq', '2'))
         self.words = Counter()
         self.set_language(language)
         self.read_lexicon()
-        if self.use_vectors:
+        if '--ranking' in args and args['--ranking'] is not None:
+            self.order = args['--ranking'].split(",")
+        else:
+            self.order = 'avg_frequency', 'semantic_similarity', 'shortest'
+        if 'semantic_similarity' in self.order:
             self.read_vectors()
+        else:
+            self.vec = None
 
     def set_language(self, language):
         """Set the language and its binding morphemes."""
@@ -109,7 +115,7 @@ class Splitter(object):
         if self.use_stopwords:
             with open(os.path.join(__loc__, "lex", self.lang + ".stopwords.txt")) as f:
                 for line in f:
-                    word = fix_text(line.strip())
+                    word = line.strip()
                     if word in self.words:
                         del self.words[word]
         if self.use_stopwords:
@@ -126,6 +132,9 @@ class Splitter(object):
         """Read the vector space into self.vec."""
         with open(os.path.join(__loc__, "lex", "{lang}.vectors.pkl".format(lang=self.lang)), "rb") as f:
             self.vec = pickle.load(f)
+
+    def not_a_binding_morpheme(self, part):
+        return part not in self.binding_morphemes
 
     @staticmethod
     def left_slices(word, *, minlen=1):
@@ -165,26 +174,50 @@ class Splitter(object):
         #     return (word,) if output == "tuple" else word
 
         clean = self.clean(splits)
-        best = self.rank(clean, word)
+        rank = self.rank(clean)
+
+        if rank:
+            best = rank[0]
+        else:
+            best = word
 
         self.log(2, "Best:", best)
 
         # if self.use_stopwords and len(best) > 1 and best[-1] in self.suffixes:
         #     best = best[:-2] + (best[-2]+best[-1],)
 
-        return best if output == "tuple" else self.evalify(best)
+        return best[-1] if output == "tuple" else self.evalify(best[-1])
 
-    def rank(self, clean, word):
-        # Ranking:
-        self.log(2, "Ranking list:", clean)
-        if hasattr(self, 'custom_ranking'):
-            return self.custom_ranking(clean, word)
-        if not self.use_counts:
-            return self.most_known(clean, word)
+    def rank(self, clean):
+        """
+        Given an iterable of possible splits, return a sorted list.
+
+        The list will contain tuples of various scores, where the last element
+        of the tuple will be the corresponding split.
+
+        >>> self.rank({('krankenhaus',), ('kranken', 'haus'), ...})
+        [(1024751378, 1.0, -2, ('kranken', 'haus')), (748127142, 1.0, -3, ('krank', 'en', 'haus')), ...]
+
+        The scoring methods are defined by self.order, which was initialized
+        by command line or key word arguments.
+
+        """
+        ranked = []
+        for split in clean:
+            ranked.append((*(getattr(self, 'rank_' + method)(split) for method in self.order), split))
+        ranked.sort(reverse=True)
+        self.log(2, "Ranked:", ranked)
+        if self.force_split:
+            return [split for split in ranked if len(split[-1]) > 1]
         else:
-            return self.best_avg_frequency(clean, word)
+            return ranked
 
     def clean(self, splits):
+        """
+        Given an iterable of splits, return a cleaner subset.
+
+        Also, some other minor adjustments are made.
+        """
         clean = set()
         # Cleaning:
         for split in splits:
@@ -235,10 +268,14 @@ class Splitter(object):
             return x**(1/n)
 
     def vecsim(self, left, right):
-        return self.vec.similarity(left[:6], right[:6])
+        if self.vec is not None:
+            return self.vec.similarity(left[:6], right[:6])
+        else:
+            return 0
 
     def best_avg_frequency(self, clean, word):
         """
+        DEPRECATED
         Frequency-based ranking method.
 
         Use the product of frequencies.
@@ -263,10 +300,55 @@ class Splitter(object):
                 vec = 0
             ranked.append((rank, vec, -len(split), rank2, split))
         ranked.sort(reverse=True)
-        return ranked[0][-1]
+        return list(map(itemgetter(-1), ranked))
+
+    def rank_avg_frequency(self, split):
+        if self.force_split and len([*filter(self.not_a_binding_morpheme, split)]) == 1:
+            multiplier = 0.0001
+        else:
+            multiplier = 1
+
+        return reduce(mul,
+                map(lambda x: self.words[x],
+                    filter(self.not_a_binding_morpheme, split)
+                    )
+                ) * multiplier
+
+    def rank_longest(self, split):
+        return len(split)
+
+    def rank_shortest(self, split):
+        return -len(split)
+
+    def rank_semantic_similarity(self, split):
+        """
+        Return the average semantic similarity between adjacent parts of a split.
+        """
+        sims = [0]  # initialize with 0
+        for left, right in pairwise([x for x in split if x not in self.binding_morphemes]):
+            try:
+                sims.append(self.vecsim(left, right))
+            except KeyError:
+                sims.append(0)
+        return sum(sims)/len(sims)
+
+    def rank_most_known(self, split):
+        parts = [*filter(self.not_a_binding_morpheme, split)]
+
+        if len(parts) == 0:
+            return 0
+
+        return sum(
+                1 for p in parts
+                if p in self.words
+                or any(
+                    p+nm in self.words for nm in self.negative_morphemes
+                    )
+                )/len(parts)
 
     def most_known(self, clean, word):
         """
+        DEPRECATED
         Return the split with the highest percentage of known parts.
 
         When in doubt, return the split with the lower amount of parts.
@@ -288,22 +370,8 @@ class Splitter(object):
                 vec = 0
             ranked.append((known_parts/parts, -len(split), vec, split))
 
-        try:
-            return max(ranked)[-1]
-        except ValueError:
-            return word
-
-    def semantic_similarity(self, split):
-        """
-        Return the average semantic similarity between adjacent parts of a split.
-        """
-        sims = [0]  # initialize with 0
-        for left, right in pairwise([x for x in split if x not in self.binding_morphemes]):
-            try:
-                sims.append(self.vecsim(left, right))
-            except KeyError:
-                sims.append(0)
-        return sum(sims)/len(sims)
+        ranked.sort(reverse=True)
+        return list(map(itemgetter(-1), ranked))
 
     def evalify(self, split):
         """
@@ -322,8 +390,6 @@ if __name__ == '__main__':
         print("Error: Python >=3.5 required.", file=sys.stderr)
         exit(1)
     args = docopt.docopt(__doc__)
-    if args['--verbose']:
-        verbose = True
     spl = Splitter(language=args['--lang'], verbose=args['--verbose'], args=args)
     for line in fileinput(args['<file>']):
         if not line.strip(): break
