@@ -12,7 +12,8 @@ Options:
     -S --stopwords=<yes|no>  Use stopword list [default: yes].
     --force-split=<yes|no>   Try always splitting [default: no].
     --min-freq=<yes|no>      Minimum frequency to consider word [default: 2].
-    --ranking=<...>          Comma-seperated list of methods to use.
+    --ranking=<...>          Comma-seperated list of ranking methods to use.
+    --cleaning=<...>         Comma-seperated list of cleaning methods to use.
 
 Possible values for the --ranking switch are methods of the Splitter class that
 start with "rank_":
@@ -24,6 +25,14 @@ start with "rank_":
 - shortest
 
 The default is: --ranking=avg_frequency,semantic_similarity,shortest
+
+Possible values for the --cleaning switch are methods of the Splitter class
+that start with "clean_":
+
+- general
+- last_parts
+- suffix
+- prefix
 
 """
 import os.path
@@ -49,6 +58,13 @@ def pairwise(iterable):
     next(j)
     yield from zip(i, j)
 
+def wrap_functions(fns):
+    def wrapper(arg):
+        for fn in fns:
+            arg = fn(arg)
+        return arg
+    return wrapper
+
 class Splitter(object):
     def log(self, level, *args, **kwargs):
         """Print to stderr if verbose mode is set"""
@@ -71,10 +87,15 @@ class Splitter(object):
         self.set_language(language)
         self.read_lexicon()
         if '--ranking' in args and args['--ranking'] is not None:
-            self.order = args['--ranking'].split(",")
+            self.rankings = args['--ranking'].split(",")
         else:
-            self.order = 'avg_frequency', 'semantic_similarity', 'shortest'
-        if 'semantic_similarity' in self.order:
+            self.rankings = 'avg_frequency', 'semantic_similarity', 'shortest'
+        if '--cleaning' in args and args['--cleaning'] is not None:
+            self.cleanings = args['--cleaning'].split(",")
+        else:
+            self.cleanings = 'general', 'last_parts', 'suffix', 'prefix'
+        self.clean = wrap_functions(getattr(self, 'clean_' + method) for method in self.cleanings)
+        if 'semantic_similarity' in self.rankings:
             self.read_vectors()
         else:
             self.vec = None
@@ -198,13 +219,13 @@ class Splitter(object):
         >>> self.rank({('krankenhaus',), ('kranken', 'haus'), ...})
         [(1024751378, 1.0, -2, ('kranken', 'haus')), (748127142, 1.0, -3, ('krank', 'en', 'haus')), ...]
 
-        The scoring methods are defined by self.order, which was initialized
+        The scoring methods are defined by self.rankings, which was initialized
         by command line or key word arguments.
 
         """
         ranked = []
         for split in clean:
-            ranked.append((*(getattr(self, 'rank_' + method)(split) for method in self.order), split))
+            ranked.append((*(getattr(self, 'rank_' + method)(split) for method in self.rankings), split))
         ranked.sort(reverse=True)
         self.log(2, "Ranked:", ranked)
         if self.force_split:
@@ -212,16 +233,8 @@ class Splitter(object):
         else:
             return ranked
 
-    def clean(self, splits):
-        """
-        Given an iterable of splits, return a cleaner subset.
-
-        Also, some other minor adjustments are made.
-        """
-        clean = set()
-        # Cleaning:
+    def clean_general(self, splits):
         for split in splits:
-            self.log(3, "Possible split:", split)
             cleaned = []
             i = 0
             last = len(split)-1
@@ -237,28 +250,28 @@ class Splitter(object):
                 else:
                     cleaned.append(split[i])
                 i += 1
+            yield tuple(cleaned)
 
-            # endings aren't binding morphemes:
-            # while cleaned[-1] in self.binding_morphemes:
-            while len(cleaned[-1]) < 3:
-                cleaned[-2] += cleaned[-1]
-                del cleaned[-1]
+    def clean_last_parts(self, splits):
+        for split in splits:
+            if len(split[-1]) < 3:
+                yield split[:-2] + (split[-2] + split[-1],)
+            else:
+                yield split
 
-            if self.use_stopwords and len(split) > 1:
-                if any(split[-1].startswith(suf) and len(suf)+2 >= len(split[-1]) for suf in self.suffixes):
-                    continue
-            # if self.use_stopwords and len(split) > 1 and split[-1] in self.suffixes:
-            #     continue
-            if len(split) > 1 and any(part in self.prefixes for part in split):
-                continue
+    def clean_suffix(self, splits):
+        for split in splits:
+            if any(split[-1].startswith(suf) for suf in self.suffixes):
+                pass
+            else:
+                yield split
 
-            self.log(3, "Cleaned:", cleaned)
-            clean.add(tuple(cleaned))
-
-        if hasattr(self, 'custom_cleaning'):
-            clean = self.custom_cleaning(clean, word)
-
-        return clean
+    def clean_prefix(self, splits):
+        for split in splits:
+            if any(part in self.prefixes for part in split):
+                pass
+            else:
+                yield split
 
     @staticmethod
     def nth_root(x, n):
@@ -273,46 +286,17 @@ class Splitter(object):
         else:
             return 0
 
-    def best_avg_frequency(self, clean, word):
-        """
-        DEPRECATED
-        Frequency-based ranking method.
-
-        Use the product of frequencies.
-        """
-        ranked = []
-        for split in clean:
-            frequencies = []
-            for part in split:
-                if part in self.binding_morphemes:
-                    continue
-                else:
-                    frequencies.append(self.words[part])
-            # rank = sqrt(sum(freq**2 for freq in frequencies))
-            # rank = self.nth_root(reduce(mul, frequencies), len(frequencies)) # geometric mean
-            rank = reduce(mul, frequencies)
-            rank2 = sum(log0(freq) for freq in frequencies)
-            if self.force_split and len([x for x in split if x not in self.binding_morphemes]) == 1:
-                rank *= 0.0001
-            if self.use_vectors:
-                vec = self.semantic_similarity(split)
-            else:
-                vec = 0
-            ranked.append((rank, vec, -len(split), rank2, split))
-        ranked.sort(reverse=True)
-        return list(map(itemgetter(-1), ranked))
-
     def rank_avg_frequency(self, split):
-        if self.force_split and len([*filter(self.not_a_binding_morpheme, split)]) == 1:
-            multiplier = 0.0001
-        else:
-            multiplier = 1
+        # if self.force_split and len([*filter(self.not_a_binding_morpheme, split)]) == 1:
+        #     multiplier = 0.0001
+        # else:
+        #     multiplier = 1
 
         return reduce(mul,
                 map(lambda x: self.words[x],
                     filter(self.not_a_binding_morpheme, split)
                     )
-                ) * multiplier
+                )  # * multiplier
 
     def rank_longest(self, split):
         return len(split)
@@ -346,33 +330,6 @@ class Splitter(object):
                     )
                 )/len(parts)
 
-    def most_known(self, clean, word):
-        """
-        DEPRECATED
-        Return the split with the highest percentage of known parts.
-
-        When in doubt, return the split with the lower amount of parts.
-        """
-        ranked = []
-        for split in clean:
-            parts, known_parts = 0, 0
-            for w in split:
-                if w in self.binding_morphemes:
-                    continue
-                elif w in self.words or any(w+nm in self.words for nm in self.negative_morphemes):
-                    known_parts += 1
-                parts += 1
-            if self.force_split and len([x for x in split if x not in self.binding_morphemes]) == 1:
-                known_parts = 0  # enforce decompounding
-            if self.use_vectors:
-                vec = self.semantic_similarity(split)
-            else:
-                vec = 0
-            ranked.append((known_parts/parts, -len(split), vec, split))
-
-        ranked.sort(reverse=True)
-        return list(map(itemgetter(-1), ranked))
-
     def evalify(self, split):
         """
         From a tuple of parts, return a string.
@@ -393,5 +350,4 @@ if __name__ == '__main__':
     spl = Splitter(language=args['--lang'], verbose=args['--verbose'], args=args)
     for line in fileinput(args['<file>']):
         if not line.strip(): break
-        line = fix_text(line)
         print(line.strip(), spl.split(line.strip(), output="eval"), sep="\t")
