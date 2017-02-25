@@ -6,14 +6,15 @@ Usage:
     splitter.py [-v ...] [options] <file>...
 
 Options:
-    --help                   Display this help and exit.
-    -L --lang=<...>          Specify the language [default: de].
-    -v --verbose             Be verbose. Repeatable for more verbosity.
-    -S --stopwords=<yes|no>  Use stopword list [default: yes].
-    --force-split=<yes|no>   Try always splitting [default: no].
-    --min-freq=<yes|no>      Minimum frequency to consider word [default: 2].
-    --ranking=<...>          Comma-seperated list of ranking methods to use.
-    --cleaning=<...>         Comma-seperated list of cleaning methods to use.
+    --help                      Display this help and exit.
+    -L --lang=<...>             Specify the language [default: de].
+    -v --verbose                Be verbose. Repeatable for more verbosity.
+    -S --stopwords=<yes|no>     Use stopword list [default: yes].
+    -f --force-split=<yes|no>   Try always splitting [default: no].
+    -M --min-freq=<...>         Minimum frequency to consider word [default: 2].
+    -l --limit=<n>              Consider only the top n words in the lexicon.
+    --ranking=<...>             Comma-seperated list of ranking methods to use.
+    --cleaning=<...>            Comma-seperated list of cleaning methods to use.
 
 Possible values for the --ranking switch are methods of the Splitter class that
 start with "rank_":
@@ -74,18 +75,12 @@ class Splitter(object):
     def __init__(self, *, language="de", verbose=False, args):
         """Initialize the Splitter."""
         self.verbose = verbose
-        if '--force-split' in args:
-            self.force_split = args['--force-split'] == 'yes'
-        else:
-            self.force_split = False
-        if '--stopwords' in args:
-            self.use_stopwords = args['--stopwords'] == 'yes'
-        else:
-            self.use_stopwords = True
+        self.force_split = args.get('--force-split', 'no') == 'yes'
+        self.use_stopwords = args.get('--stopwords', 'yes') == 'yes'
         self.min_freq = int(args.get('--min-freq', '2'))
         self.words = Counter()
         self.set_language(language)
-        self.read_lexicon()
+        self.read_lexicon(limit=args.get('--limit', None))
         if '--ranking' in args and args['--ranking'] is not None:
             self.rankings = args['--ranking'].split(",")
         else:
@@ -117,6 +112,8 @@ class Splitter(object):
 
     def read_lexicon(self, limit=None):
         """Read the language-specific lexicon."""
+        if limit is not None:
+            limit = int(limit)
         self.log(
                 1,
                 "Loading " + os.path.join(__loc__, "lex", self.lang + ".lexicon.tsv"),
