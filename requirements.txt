@@ -1,3 +1,2 @@
-ftfy
-docopt
-gensim
+docopt>=0.6.2
+gensim==0.13.4
