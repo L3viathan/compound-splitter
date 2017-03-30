@@ -15,6 +15,8 @@ Options:
     -l --limit=<n>              Consider only the top n words in the lexicon.
     --ranking=<...>             Comma-seperated list of ranking methods to use.
     --cleaning=<...>            Comma-seperated list of cleaning methods to use.
+    --evaluate                  Evaluate a given gold file and print the results.
+    --inspect=<word>            Debugging method to see what happens to a specific word.
 
 Possible values for the --ranking switch are methods of the Splitter class that
 start with "rank_":
@@ -25,7 +27,7 @@ start with "rank_":
 - longest
 - shortest
 
-The default is: --ranking=avg_frequency,semantic_similarity,shortest
+The default is: --ranking=most_known,semantic_similarity,shortest
 
 Possible values for the --cleaning switch are methods of the Splitter class
 that start with "clean_":
@@ -60,8 +62,11 @@ def pairwise(iterable):
     yield from zip(i, j)
 
 def wrap_functions(fns):
+    fns = [*reversed(fns)]
     def wrapper(arg):
+        # print("fns:", fns)
         for fn in fns:
+            # print("applying", fn)
             arg = fn(arg)
         return arg
     return wrapper
@@ -80,20 +85,24 @@ class Splitter(object):
         self.min_freq = int(args.get('--min-freq', '2'))
         self.words = Counter()
         self.set_language(language)
-        self.read_lexicon(limit=args.get('--limit', None))
+        self.read_lexicon(limit=args.get('--limit', 125000))
         if '--ranking' in args and args['--ranking'] is not None:
             self.rankings = args['--ranking'].split(",")
         else:
-            self.rankings = 'avg_frequency', 'semantic_similarity', 'shortest'
+            self.rankings = 'most_known', 'semantic_similarity', 'shortest'
         if '--cleaning' in args and args['--cleaning'] is not None:
             self.cleanings = args['--cleaning'].split(",")
         else:
             self.cleanings = 'general', 'last_parts', 'suffix', 'prefix'
-        self.clean = wrap_functions(getattr(self, 'clean_' + method) for method in self.cleanings)
+        self.clean = wrap_functions([getattr(self, 'clean_' + method) for method in self.cleanings])
         if 'semantic_similarity' in self.rankings:
             self.read_vectors()
         else:
             self.vec = None
+        if args['--inspect']:
+            self.inspect = args['--inspect']
+        else:
+            self.inspect = None
 
     def set_language(self, language):
         """Set the language and its binding morphemes."""
@@ -186,18 +195,24 @@ class Splitter(object):
         """Split a given word in its parts."""
         # high-level method. This basically filters the output from splits
         word = word.lower()
+        if word == self.inspect:
+            print("Splitting", word)
         self.log(2, "Splitting", word)
         splits = self.splits(word)
         # if not splits:  # in case we change the returning of unknown things
         #     return (word,) if output == "tuple" else word
 
         clean = self.clean(splits)
+        if word == self.inspect:
+            print("After cleaning: ", clean)
         rank = self.rank(clean)
+        if word == self.inspect:
+            print("After ranking: ", rank)
 
         if rank:
             best = rank[0]
         else:
-            best = word
+            best = [word]
 
         self.log(2, "Best:", best)
 
@@ -264,7 +279,9 @@ class Splitter(object):
                 yield split
 
     def clean_prefix(self, splits):
+        # self.log(3, "prefix-splitting", splits)
         for split in splits:
+            # self.log(4, "> let's try", split)
             if any(part in self.prefixes for part in split):
                 pass
             else:
@@ -284,11 +301,6 @@ class Splitter(object):
             return 0
 
     def rank_avg_frequency(self, split):
-        # if self.force_split and len([*filter(self.not_a_binding_morpheme, split)]) == 1:
-        #     multiplier = 0.0001
-        # else:
-        #     multiplier = 1
-
         return reduce(mul,
                 map(lambda x: self.words[x],
                     filter(self.not_a_binding_morpheme, split)
@@ -339,12 +351,83 @@ class Splitter(object):
             result += ("|" if part in self.binding_morphemes else "+") + part
         return result[1:]
 
+    def evaluate(self, gold_file):
+        """
+        Given an annotated compound list, return performance statistics.
+        """
+        judgements = Counter()
+        error_analysis = Counter()
+        with open(gold_file) as f:
+            for line in f:
+                for line in f:
+                    original, gold = line.strip().split()
+                    result = self.split(original, output="eval")
+                    # ignore endings:
+                    if "+" in gold and "+" in result:
+                        gold = gold.rsplit("+", 1)[0] + "+"
+                        result = result.rsplit("+", 1)[0] + "+"
+                    # count linking morphemes as part-suffixes
+                    gold = gold.replace("|", "")
+                    result = result.replace("|", "")
+                    # error analysis:
+                    if result.count("+") < gold.count("+"):
+                        error_analysis['under'] += 1
+                    elif result.count("+") > gold.count("+"):
+                        error_analysis['over'] += 1
+                        ... #over
+                    # judgements:
+                    if "+" not in gold:  # not a compound
+                        if gold == result:
+                            judgements['true negative'] += 1
+                        elif "+" in result:  # we think it's a compound
+                            judgements['false positive'] += 1
+                        else:
+                            print(gold, result)
+                            raise RuntimeError("true negative, but still different?")
+                    else:  # compound
+                        if gold == result:
+                            judgements['true positive'] += 1
+                        elif "+" not in result:
+                            judgements['false negative'] += 1
+                        else:
+                            judgements['incorrectly split'] += 1
+                            error_analysis['wrong'] += 1
+
+        try:
+            precision = (judgements['true positive']
+                    / (judgements['true positive']
+                        + judgements['false positive']
+                        + judgements['incorrectly split']
+                        )
+                    )
+        except ZeroDivisionError:  # nothing was split
+            precision = 1
+
+        recall = (judgements['true positive']
+                / (judgements['true positive']
+                    + judgements['false positive']
+                    + judgements['false negative']
+                    )
+                )
+        accuracy = ((judgements['true positive']
+                    + judgements['true negative'])
+                / sum(judgements.values())
+                )
+        quasi_f = 2*((precision*recall)/(precision+recall))
+        return precision, recall, accuracy, quasi_f, error_analysis
+
+
 if __name__ == '__main__':
     if version_info < (3, 5):
         print("Error: Python >=3.5 required.", file=sys.stderr)
         exit(1)
     args = docopt.docopt(__doc__)
     spl = Splitter(language=args['--lang'], verbose=args['--verbose'], args=args)
-    for line in fileinput(args['<file>']):
-        if not line.strip(): break
-        print(line.strip(), spl.split(line.strip(), output="eval"), sep="\t")
+    if args['--evaluate']:
+        p, r, a, f, E = spl.evaluate(args['<file>'][0])
+        print("{:.2f} {:.2f} {:.2f} {:.2f}".format(100*p, 100*r, 100*a, 100*f), E)
+    else:
+        for line in fileinput(args['<file>']):
+            if not line.strip():
+                break
+            print(line.strip(), spl.split(line.strip(), output="eval"), sep="\t")
