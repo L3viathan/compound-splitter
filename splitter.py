@@ -12,11 +12,12 @@ Options:
     -S --stopwords=<yes|no>     Use stopword list [default: yes].
     -f --force-split=<yes|no>   Try always splitting [default: no].
     -M --min-freq=<...>         Minimum frequency to consider word [default: 2].
-    -l --limit=<n>              Consider only the top n words in the lexicon.
+    -l --limit=<n>              Consider only the top n words in the lexicon [default: 125000].
     --ranking=<...>             Comma-seperated list of ranking methods to use.
     --cleaning=<...>            Comma-seperated list of cleaning methods to use.
     --evaluate                  Evaluate a given gold file and print the results.
     --inspect=<word>            Debugging method to see what happens to a specific word.
+    -W --print-wrong            When evaluating, print every incorrect word.
 
 Possible values for the --ranking switch are methods of the Splitter class that
 start with "rank_":
@@ -43,7 +44,7 @@ import docopt
 import pickle
 from sys import stderr, version_info, exit
 from math import sqrt, log2 as lg
-from operator import itemgetter, mul
+from operator import itemgetter, mul, add
 from collections import Counter
 from fileinput import input as fileinput
 from functools import reduce
@@ -62,7 +63,7 @@ def pairwise(iterable):
     yield from zip(i, j)
 
 def wrap_functions(fns):
-    fns = [*reversed(fns)]
+    # fns = [*reversed(fns)]
     def wrapper(arg):
         # print("fns:", fns)
         for fn in fns:
@@ -80,20 +81,24 @@ class Splitter(object):
     def __init__(self, *, language="de", verbose=False, args):
         """Initialize the Splitter."""
         self.verbose = verbose
+        self.log(2, args)
         self.force_split = args.get('--force-split', 'no') == 'yes'
         self.use_stopwords = args.get('--stopwords', 'yes') == 'yes'
         self.min_freq = int(args.get('--min-freq', '2'))
         self.words = Counter()
+        self.beginnings = Counter()
         self.set_language(language)
         self.read_lexicon(limit=args.get('--limit', 125000))
         if '--ranking' in args and args['--ranking'] is not None:
             self.rankings = args['--ranking'].split(",")
         else:
-            self.rankings = 'most_known', 'semantic_similarity', 'shortest'
+            self.rankings = 'semantic_similarity', 'shortest'
+        self.log(2, "Rankings:", self.rankings)
         if '--cleaning' in args and args['--cleaning'] is not None:
             self.cleanings = args['--cleaning'].split(",")
         else:
-            self.cleanings = 'general', 'last_parts', 'suffix', 'prefix'
+            self.cleanings = 'general', 'last_parts', 'prefix', 'suffix'
+        self.log(2, "Cleanings:", self.cleanings)
         self.clean = wrap_functions([getattr(self, 'clean_' + method) for method in self.cleanings])
         if 'semantic_similarity' in self.rankings:
             self.read_vectors()
@@ -103,6 +108,7 @@ class Splitter(object):
             self.inspect = args['--inspect']
         else:
             self.inspect = None
+        self.print_wrong = args['--print-wrong']
 
     def set_language(self, language):
         """Set the language and its binding morphemes."""
@@ -134,11 +140,15 @@ class Splitter(object):
                 if limit is not None and index >= limit:
                     break
                 word, count = line.split()  # fix_text() removed
-                if len(word) < 4: continue  # filter out noise
+                if len(word) < 4:
+                    continue  # filter out noise
                 # if not word.isalpha(): continue
                 count = int(count)
-                if count < self.min_freq: continue
-                self.words[word.lower()] += count
+                if count < self.min_freq:
+                    continue
+                word = word.lower()
+                self.words[word] += count
+                self.beginnings[word[:6]] += count
         if self.use_stopwords:
             with open(os.path.join(__loc__, "lex", self.lang + ".stopwords.txt")) as f:
                 for line in f:
@@ -199,20 +209,20 @@ class Splitter(object):
             print("Splitting", word)
         self.log(2, "Splitting", word)
         splits = self.splits(word)
+        splits = list(splits)
+        self.log(2, "Splits:", splits)
         # if not splits:  # in case we change the returning of unknown things
         #     return (word,) if output == "tuple" else word
 
-        clean = self.clean(splits)
-        if word == self.inspect:
-            print("After cleaning: ", clean)
+        clean = {*self.clean(splits)}
+        self.log(2, "Cleaned:", clean)
         rank = self.rank(clean)
-        if word == self.inspect:
-            print("After ranking: ", rank)
+        self.log(2, "Ranked: ", rank)
 
         if rank:
             best = rank[0]
         else:
-            best = [word]
+            best = [(word,)]
 
         self.log(2, "Best:", best)
 
@@ -239,13 +249,13 @@ class Splitter(object):
         for split in clean:
             ranked.append((*(getattr(self, 'rank_' + method)(split) for method in self.rankings), split))
         ranked.sort(reverse=True)
-        self.log(2, "Ranked:", ranked)
         if self.force_split:
             return [split for split in ranked if len(split[-1]) > 1]
         else:
             return ranked
 
     def clean_general(self, splits):
+        self.log(2, "Cleaning (general)")
         for split in splits:
             cleaned = []
             i = 0
@@ -262,29 +272,52 @@ class Splitter(object):
                 else:
                     cleaned.append(split[i])
                 i += 1
+            self.log(3, "Made it through general:", cleaned)
             yield tuple(cleaned)
 
     def clean_last_parts(self, splits):
+        self.log(2, "Cleaning (last parts)")
         for split in splits:
-            if len(split[-1]) < 3:
-                yield split[:-2] + (split[-2] + split[-1],)
-            else:
-                yield split
+            split = list(split)
+            while len(split[-1]) < 4 and len(split) >= 2:
+                split[-2] += split[-1]
+                del split[-1]
+            self.log(3, "Made it through last_parts:", split)
+            yield tuple(split)
 
     def clean_suffix(self, splits):
+        self.log(2, "Cleaning (suffix)")
         for split in splits:
-            if any(split[-1].startswith(suf) for suf in self.suffixes):
-                pass
-            else:
-                yield split
+            if self.inspect == ''.join(split):
+                print("cleaning suffix of", split)
+            split = list(split)
+            while any(split[-1].startswith(suf) for suf in self.suffixes) and len(split) >= 2:
+                split[-2] += split[-1]
+                del split[-1]
+                if self.inspect == ''.join(split):
+                    print(split)
+            self.log(3, "Made it through suffix:", split)
+            yield tuple(split)
 
     def clean_prefix(self, splits):
+        self.log(2, "Cleaning (prefix)")
         # self.log(3, "prefix-splitting", splits)
         for split in splits:
             # self.log(4, "> let's try", split)
             if any(part in self.prefixes for part in split):
                 pass
             else:
+                self.log(3, "Made it through prefix:", split)
+                yield split
+
+    def clean_fragments(self, splits):
+        self.log(2, "Cleaning (fragments)")
+        for split in splits:
+            # self.log(4, "> let's try", split)
+            if any(len(part)<3 and part not in self.binding_morphemes for part in split):
+                pass
+            else:
+                self.log(3, "Made it through fragments:", split)
                 yield split
 
     @staticmethod
@@ -301,14 +334,24 @@ class Splitter(object):
             return 0
 
     def rank_avg_frequency(self, split):
-        return reduce(mul,
+        return reduce(add,
                 map(lambda x: self.words[x],
                     filter(self.not_a_binding_morpheme, split)
                     )
                 )  # * multiplier
 
+    def rank_beginning_frequency(self, split):
+        return reduce(add,
+                      map(lambda x: self.beginnings[x[:6]],
+                    filter(self.not_a_binding_morpheme, split)
+                    )
+                )
+
     def rank_longest(self, split):
         return len(split)
+
+    def rank_no_suffixes(self, split):
+       return 0 if any(part.startswith(suf) for part in split for suf in self.suffixes) else 1
 
     def rank_shortest(self, split):
         return -len(split)
@@ -381,17 +424,23 @@ class Splitter(object):
                             judgements['true negative'] += 1
                         elif "+" in result:  # we think it's a compound
                             judgements['false positive'] += 1
+                            if self.print_wrong:
+                                print(original, gold, result)
                         else:
-                            print(gold, result)
+                            print(original, gold, result)
                             raise RuntimeError("true negative, but still different?")
                     else:  # compound
                         if gold == result:
                             judgements['true positive'] += 1
                         elif "+" not in result:
                             judgements['false negative'] += 1
+                            if self.print_wrong:
+                                print(original, gold, result)
                         else:
                             judgements['incorrectly split'] += 1
                             error_analysis['wrong'] += 1
+                            if self.print_wrong:
+                                print(original, gold, result)
 
         try:
             precision = (judgements['true positive']
