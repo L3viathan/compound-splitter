@@ -9,8 +9,10 @@ Options:
     --help                      Display this help and exit.
     -L --lang=<...>             Specify the language [default: de].
     -v --verbose                Be verbose. Repeatable for more verbosity.
-    -S --stopwords=<yes|no>     Use stopword list [default: yes].
-    -f --force-split=<yes|no>   Try always splitting [default: no].
+    --stopwords                 Use stopword list [default: True].
+    --no-stopwords              Don't use stopword list.
+    -f --force-split            Try always splitting [default: False].
+    --no-force-split            Don't try always splitting.
     -M --min-freq=<...>         Minimum frequency to consider word [default: 2].
     -l --limit=<n>              Consider only the top n words in the lexicon [default: 125000].
     --ranking=<...>             Comma-seperated list of ranking methods to use.
@@ -27,6 +29,7 @@ start with "rank_":
 - most_known
 - longest
 - shortest
+- no_suffixes
 
 The default is: --ranking=most_known,semantic_similarity,shortest
 
@@ -72,6 +75,15 @@ def wrap_functions(fns):
         return arg
     return wrapper
 
+def docopt_switch(args, switch, default):
+    """Workaround for docopt/docopt/51"""
+    if args[switch]:
+        return True
+    elif args['--no' + switch[1:]]:
+        return False
+    else:
+        return default
+
 class Splitter(object):
     def log(self, level, *args, **kwargs):
         """Print to stderr if verbose mode is set"""
@@ -82,8 +94,8 @@ class Splitter(object):
         """Initialize the Splitter."""
         self.verbose = verbose
         self.log(2, args)
-        self.force_split = args.get('--force-split', 'no') == 'yes'
-        self.use_stopwords = args.get('--stopwords', 'yes') == 'yes'
+        self.force_split = docopt_switch(args, '--force-split', False)
+        self.use_stopwords = docopt_switch(args, '--stopwords', True)
         self.min_freq = int(args.get('--min-freq', '2'))
         self.words = Counter()
         self.beginnings = Counter()
@@ -97,7 +109,7 @@ class Splitter(object):
         if '--cleaning' in args and args['--cleaning'] is not None:
             self.cleanings = args['--cleaning'].split(",")
         else:
-            self.cleanings = 'general', 'last_parts', 'prefix', 'suffix'
+            self.cleanings = 'general', 'last_parts', 'prefix', 'fragments', 'suffix'
         self.log(2, "Cleanings:", self.cleanings)
         self.clean = wrap_functions([getattr(self, 'clean_' + method) for method in self.cleanings])
         if 'semantic_similarity' in self.rankings:
@@ -155,14 +167,10 @@ class Splitter(object):
                     word = line.strip()
                     if word in self.words:
                         del self.words[word]
-        if self.use_stopwords:
-            with open(os.path.join(__loc__, "lex", self.lang + ".suffixes.txt")) as f:
-                self.suffixes = set(map(str.strip, f))
-            with open(os.path.join(__loc__, "lex", self.lang + ".prefixes.txt")) as f:
-                self.prefixes = set(map(str.strip, f))
-        else:
-            self.suffixes = set()
-            self.prefixes = set()
+        with open(os.path.join(__loc__, "lex", self.lang + ".suffixes.txt")) as f:
+            self.suffixes = set(filter(lambda x: len(x)>2, map(str.strip, f)))
+        with open(os.path.join(__loc__, "lex", self.lang + ".prefixes.txt")) as f:
+            self.prefixes = set(map(str.strip, f))
         self.log(1, "...done")
 
     def read_vectors(self):
@@ -226,9 +234,6 @@ class Splitter(object):
 
         self.log(2, "Best:", best)
 
-        # if self.use_stopwords and len(best) > 1 and best[-1] in self.suffixes:
-        #     best = best[:-2] + (best[-2]+best[-1],)
-
         return best[-1] if output == "tuple" else self.evalify(best[-1])
 
     def rank(self, clean):
@@ -291,7 +296,7 @@ class Splitter(object):
             if self.inspect == ''.join(split):
                 print("cleaning suffix of", split)
             split = list(split)
-            while any(split[-1].startswith(suf) for suf in self.suffixes) and len(split) >= 2:
+            while any(split[-1].startswith(suf) and len(split[-1])-2 <= len(suf) for suf in self.suffixes) and len(split) >= 2:
                 split[-2] += split[-1]
                 del split[-1]
                 if self.inspect == ''.join(split):
@@ -335,17 +340,17 @@ class Splitter(object):
 
     def rank_avg_frequency(self, split):
         return reduce(add,
-                map(lambda x: self.words[x],
+                map(lambda x: log0(self.words[x]),
                     filter(self.not_a_binding_morpheme, split)
                     )
-                )  # * multiplier
+                )/len(split)
 
     def rank_beginning_frequency(self, split):
         return reduce(add,
-                      map(lambda x: self.beginnings[x[:6]],
+                      map(lambda x: log0(self.beginnings[x[:6]]),
                     filter(self.not_a_binding_morpheme, split)
                     )
-                )
+                )/len(split)
 
     def rank_longest(self, split):
         return len(split)
@@ -403,7 +408,11 @@ class Splitter(object):
         with open(gold_file) as f:
             for line in f:
                 for line in f:
-                    original, gold = line.strip().split()
+                    try:
+                        original, gold = line.lower().strip().split()
+                    except Exception as e:
+                        print(line)
+                        raise e
                     result = self.split(original, output="eval")
                     # ignore endings:
                     if "+" in gold and "+" in result:
@@ -411,6 +420,8 @@ class Splitter(object):
                         result = result.rsplit("+", 1)[0] + "+"
                     # count linking morphemes as part-suffixes
                     gold = gold.replace("|", "")
+                    gold = gold.replace("(", "")
+                    gold = gold.replace(")", "")
                     result = result.replace("|", "")
                     # error analysis:
                     if result.count("+") < gold.count("+"):
@@ -464,7 +475,6 @@ class Splitter(object):
                 )
         quasi_f = 2*((precision*recall)/(precision+recall))
         return precision, recall, accuracy, quasi_f, error_analysis
-
 
 if __name__ == '__main__':
     if version_info < (3, 5):
