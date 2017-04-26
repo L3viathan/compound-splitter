@@ -340,17 +340,16 @@ class Splitter(object):
 
     def rank_avg_frequency(self, split):
         return reduce(add,
-                map(lambda x: log0(self.words[x]),
+                map(lambda x: self.words[x],
                     filter(self.not_a_binding_morpheme, split)
                     )
-                )/len(split)
+                ) / len(split)
 
     def rank_beginning_frequency(self, split):
         return reduce(add,
-                      map(lambda x: log0(self.beginnings[x[:6]]),
+                      map(lambda x: self.beginnings[x[:6]],
                     filter(self.not_a_binding_morpheme, split)
-                    )
-                )/len(split)
+                    )) / len(split)
 
     def rank_longest(self, split):
         return len(split)
@@ -474,7 +473,9 @@ class Splitter(object):
                 / sum(judgements.values())
                 )
         quasi_f = 2*((precision*recall)/(precision+recall))
-        return precision, recall, accuracy, quasi_f, error_analysis
+        coverage = ((judgements['true positive'] + judgements['incorrectly split'])
+                   /(judgements['true positive'] + judgements['incorrectly split'] + judgements['false negative']))
+        return precision, recall, accuracy, quasi_f, coverage, error_analysis
 
 if __name__ == '__main__':
     if version_info < (3, 5):
@@ -483,8 +484,10 @@ if __name__ == '__main__':
     args = docopt.docopt(__doc__)
     spl = Splitter(language=args['--lang'], verbose=args['--verbose'], args=args)
     if args['--evaluate']:
-        p, r, a, f, E = spl.evaluate(args['<file>'][0])
-        print("{:.2f} {:.2f} {:.2f} {:.2f}".format(100*p, 100*r, 100*a, 100*f), E)
+        # Fix rounding to make 2.345 mean 2.35
+        L = lambda x: int(round(x+0.001, 2)*100)
+        p, r, a, f, c, E = spl.evaluate(args['<file>'][0])
+        print(".{} .{} .{} .{} .{}".format(*map(L, (p, r, a, f, c))), E)
     else:
         for line in fileinput(args['<file>']):
             if not line.strip():
