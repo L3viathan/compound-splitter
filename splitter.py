@@ -40,6 +40,7 @@ that start with "clean_":
 - last_parts
 - suffix
 - prefix
+- fragments
 
 """
 import os.path
@@ -107,7 +108,7 @@ class Splitter(object):
             self.rankings = 'semantic_similarity', 'shortest'
         self.log(2, "Rankings:", self.rankings)
         if '--cleaning' in args and args['--cleaning'] is not None:
-            self.cleanings = args['--cleaning'].split(",")
+            self.cleanings = [x for x in args['--cleaning'].split(",") if x]
         else:
             self.cleanings = 'general', 'last_parts', 'prefix', 'fragments', 'suffix'
         self.log(2, "Cleanings:", self.cleanings)
@@ -125,15 +126,13 @@ class Splitter(object):
     def set_language(self, language):
         """Set the language and its binding morphemes."""
         self.lang = language
+        self.negative_morphemes = []
         if language == "de":
             self.binding_morphemes = ["s", "e", "en", "nen", "ens", "es", "ns", "er", "n"]
-            self.negative_morphemes = []#,"en,  "n"]
         elif language == "sv":
             self.binding_morphemes = ["s"]
-            self.negative_morphemes = []
         elif language == "hu":
             self.binding_morphemes = ["ó", "ő", "ba", "ítő", "es", "s", "i", "a"]
-            self.negative_morphemes = []
         else:
             raise NotImplementedError()
 
@@ -343,13 +342,13 @@ class Splitter(object):
                 map(lambda x: self.words[x],
                     filter(self.not_a_binding_morpheme, split)
                     )
-                ) / len(split)
+                ) / len([s for s in split if self.not_a_binding_morpheme(s)])
 
     def rank_beginning_frequency(self, split):
         return reduce(add,
                       map(lambda x: self.beginnings[x[:6]],
                     filter(self.not_a_binding_morpheme, split)
-                    )) / len(split)
+                    )) / len([s for s in split if self.not_a_binding_morpheme(s)])
 
     def rank_longest(self, split):
         return len(split)
