@@ -104,3 +104,9 @@ dictionary is automatically printed in the beginning.
 Subclassing `Splitter` can be done to add language support, add ranking or
 cleaning methods, or change core aspects of the system. This is described in
 detail in Section 6.4 of the thesis.
+
+# More information
+
+This was part of [my MSc
+thesis](https://dspace.cuni.cz/handle/20.500.11956/87420)
+[[PDF](https://dspace.cuni.cz/bitstream/handle/20.500.11956/87420/DPTX_2015_2_11320_0_456650_0_189769.pdf?sequence=1)].
